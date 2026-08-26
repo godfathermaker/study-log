@@ -827,7 +827,8 @@ function chunk(ops){
  */
 function verify(done){
   if(S.offline){ chip('','오프라인 · '+pendCount()+'건 대기'); if(done)done(); return; }
-  pull(function(ok){
+  pull(function(ok,r){
+    if(!ok && r && isAuthErr(r.err)){ kickToGate(r.err); if(done)done(); return; }
     if(!ok){
       /* 오프라인이면 판정하지 않는다. 지하철에서 빨간 경고가 뜨던 것이 이것이다. */
       chip(S.offline?'':'err', S.offline? '오프라인 · '+pendCount()+'건 대기' : '연결 안 됨');
@@ -905,6 +906,42 @@ function pull(cb){
 /* ══════════════════════════════════════════════════════════════════════
  * 4 · 게이트 · 부팅 · 셸
  * ══════════════════════════════════════════════════════════════════════ */
+/**
+ * 서버가 "너는 못 들어온다" 고 한 것인가, 아니면 그냥 연결이 안 된 것인가.
+ * ⚠ 이 둘을 뭉뚱그리면, 시트에서 코드를 바꾼 순간 앱이 **"연결 안 됨"** 이라고
+ *   거짓말을 하면서 빈 화면에 갇힌다. 로그인 화면조차 안 나온다.
+ */
+var AUTH_ERRS = {'bad code':1,'not allowed':1,'no role':1,'roster off':1,'no shared code':1};
+function isAuthErr(e){ return !!AUTH_ERRS[String(e||'')]; }
+
+var ERR_KO = {
+  'bad code':'코드가 바뀌었습니다. 새 코드를 넣어주세요.',
+  'not allowed':'명단에서 이 이름을 찾을 수 없습니다. 시트를 확인해주세요.',
+  'no role':'역할이 지정되지 않았습니다. 시트의 settings 를 확인해주세요.',
+  'roster off':'명단이 꺼져 있습니다. settings B2 를 "켬" 으로 바꿔주세요.',
+  'no shared code':'공용코드가 설정되지 않았습니다. settings B1 을 채워주세요.',
+  'timeout':'서버가 응답하지 않습니다. 잠시 뒤 다시 눌러주세요.',
+  'network':'연결에 실패했습니다. 인터넷을 확인해주세요.'
+};
+
+/**
+ * 저장된 로그인이 거부됐다 — 게이트로 돌려보낸다.
+ *
+ * ⚠ 로컬 데이터(S.db·pend)는 **지우지 않는다.** 아직 안 올라간 기록이 거기 있을 수 있다.
+ *   자격증명만 버리고, 다시 로그인하면 loadLocal 이 그대로 읽어 retryPending 이 올려보낸다.
+ */
+function kickToGate(err){
+  try{ localStorage.removeItem('tp_me'); }catch(e){}
+  var nm = S.name;
+  S.booted=false; S.code='';
+  $('#app').classList.add('hide');
+  $('#gate').classList.remove('hide');
+  $('#gname').value = nm || '';
+  $('#gcode').value = '';
+  gate(ERR_KO[err] || ('로그인이 만료됐습니다. 다시 넣어주세요. ('+err+')'), 1);
+  $('#gcode').focus();
+}
+
 function chip(kind,txt){
   var c=$('#chip'); if(!c) return;
   c.className=kind||'';
@@ -928,15 +965,7 @@ function login(){
     $('#gbtn').disabled=false;
     if(!r||!r.ok){
       var e=(r&&r.err)||'timeout';
-      gate({
-        'bad code':'코드가 맞지 않습니다.',
-        'not allowed':'명단에 없는 이름입니다.',
-        'no role':'역할이 지정되지 않았습니다. 시트의 settings 를 확인해주세요.',
-        'roster off':'명단이 꺼져 있습니다. settings B2 를 "켬" 으로 바꿔주세요.',
-        'no shared code':'공용코드가 설정되지 않았습니다. settings B1 을 채워주세요.',
-        'timeout':'서버가 응답하지 않습니다. 잠시 뒤 다시 눌러주세요.',
-        'network':'연결에 실패했습니다. 인터넷을 확인해주세요.'
-      }[e]||('오류: '+e),1);
+      gate(ERR_KO[e]||('오류: '+e),1);
       return;
     }
     S.name=name; S.code=code; S.role=r.role;
@@ -961,7 +990,8 @@ function boot(){
   S.booted=true;
   render();
   chip('busy','불러오는 중');
-  pull(function(ok){
+  pull(function(ok,r){
+    if(!ok && r && isAuthErr(r.err)){ kickToGate(r.err); return; }
     if(ok) chip('ok','최신');
     else chip('err','연결 안 됨');
     render();
